@@ -6,6 +6,10 @@ import java.util.*;
 import java.rmi.RemoteException;
 import java.io.*;
 import Server.Common.ResItemEnum;
+import java.rmi.registry.Registry;
+import java.rmi.registry.LocateRegistry;
+import java.rmi.AlreadyBoundException;
+import java.rmi.server.UnicastRemoteObject;
 public class Middleware implements IResourceManager{
 	HashMap<ResItemEnum, List<IResourceManager>> managers = new HashMap<ResItemEnum, List<IResourceManager>>();	
 	//To distribute relatively equally, we naively traverse the list of counters with each operation. Delete operations, which access RM's randomly, will break LRU
@@ -264,8 +268,13 @@ public class Middleware implements IResourceManager{
 		lruRM.put(type, (lruRM.get(type) + 1) % (managers.get(type).size()));
 	}
 
-	public static void main(String[] args) {
+	public static void main(String[] args) throws RemoteException, AlreadyBoundException {
 		System.out.println("testing");
+		Middleware mid = new Middleware();
+		Middleware midproxy = (Middleware) UnicastRemoteObject.exportObject(mid, 0);
+		//Registry registry = LocateRegistry.getRegistry();
+		Registry registry = LocateRegistry.createRegistry(Integer.parseInt(args[0]));
+		registry.bind("mid",midproxy);
 	}
 }
 
