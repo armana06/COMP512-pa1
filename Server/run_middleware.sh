@@ -5,4 +5,4 @@ echo '  $1 - hostname of Flights'
 echo '  $2 - hostname of Cars'
 echo '  $3 - hostname of Rooms'
 
-# java -Djava.rmi.server.codebase=file:$(pwd)/ Server.RMI.RMIMiddleware $1 $2 $3
+java -Djava.rmi.server.codebase=file:$(pwd)/ Server.RMI.Middleware $1 $2 $3

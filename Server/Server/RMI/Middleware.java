@@ -1,26 +1,33 @@
-package Server.Common;
+package Server.RMI;
 
 import Server.Interface.*;
-
+import Server.Common.Trace;
+import Server.Common.Customer;
 import java.util.*;
 import java.rmi.RemoteException;
 import java.io.*;
-import Server.Common.ResItemEnum;
+import Server.RMI.ResItemEnum;
 import java.rmi.registry.Registry;
 import java.rmi.registry.LocateRegistry;
 import java.rmi.AlreadyBoundException;
 import java.rmi.server.UnicastRemoteObject;
+import java.rmi.NotBoundException;
 public class Middleware implements IResourceManager{
 	HashMap<ResItemEnum, List<IResourceManager>> managers = new HashMap<ResItemEnum, List<IResourceManager>>();	
 	//To distribute relatively equally, we naively traverse the list of counters with each operation. Delete operations, which access RM's randomly, will break LRU
 	HashMap<ResItemEnum, Integer> lruRM = new HashMap<ResItemEnum,Integer>();
-	String name = "Middleware";
+	static int port = 3042;
+	static String prefix = "group_42_";
+	static String name = "Middleware";
+	int cusID = 0;
 	public Middleware() {
 		/* TODO
 		 * populates managers with managers
 		 */
 		//initializes counters to -1, since update occurs before each use.
+		//This should be safe, no access will occur at this point.
 		for(ResItemEnum x : ResItemEnum.values()) {
+			managers.put(x, new ArrayList<IResourceManager>());
 			lruRM.put(x, -1);
 		}	
 		
@@ -64,39 +71,60 @@ public class Middleware implements IResourceManager{
 	}
 
 	public int newCustomer() throws RemoteException {
-		return -1;
+		//TODO: Figure out how to handle what to do if one of them throws an error. It might be fine through redundacy? If the customer is never added then it just has no clue for any other related call? But if a flight is added to it it might delete it accidentally?
+		for(ResItemEnum x : ResItemEnum.values()) {
+			for(IResourceManager i : readManager(x)) {
+				//since all RM's have the same customers, this should only have to loop for the first object, ensuring that every RM has the same cid.
+				while(!i.newCustomer(cusID)) {
+					++cusID;
+				}
+			}
+		}
+		return cusID++;
 	}
 
 	public boolean newCustomer(int cid) throws RemoteException {
-		return false;
+		boolean status = true;
+		for(ResItemEnum x : ResItemEnum.values()) {
+			for(IResourceManager i : readManager(x)) {
+				status = i.newCustomer(cid) && status; 
+			}
+		}
+		return status;
 	}
 
 	public boolean deleteFlight(int flightNum) throws RemoteException {
-		boolean status = false;
+		boolean status = true;
 		for (IResourceManager x : readManager(ResItemEnum.FLIGHT)) {
-			status = status || x.deleteFlight(flightNum);
+			status = status && x.deleteFlight(flightNum);
 		}
 		return status;
 	}
 
 	public boolean deleteCars(String location) throws RemoteException {
-		boolean status = false;
+		boolean status = true;
 		for (IResourceManager x : readManager(ResItemEnum.CAR)) {
-			status = status || x.deleteCars(location);
+			status =  x.deleteCars(location) && status;
 		}
 		return status;
 	}
 
 	public boolean deleteRooms(String location) throws RemoteException {
-		boolean status = false;
-		for (IResourceManager x : readManager(ResItemEnum.CAR)) {
-			status = status || x.deleteRooms(location);
+		boolean status = true;
+		for (IResourceManager x : readManager(ResItemEnum.ROOM)) {
+			status =  x.deleteRooms(location) && status;
 		}
 		return status;
 	}
 
 	public boolean deleteCustomer(int customerID) throws RemoteException {
-		return false;
+		boolean status = true;
+		for(ResItemEnum x : ResItemEnum.values()) {
+			for(IResourceManager i : readManager(x)) {
+				status = i.deleteCustomer(customerID) && status;
+			}
+		}
+		return status;
 	}
 
 	public int queryFlight(int flightNumber) throws RemoteException {
@@ -127,7 +155,13 @@ public class Middleware implements IResourceManager{
 	}
 
 	public String queryCustomerInfo(int customerID) throws RemoteException {
-		return "test";
+		String info = "Bill for customer " + customerID + "\n"; 
+		for (ResItemEnum x : ResItemEnum.values()) {
+			for (IResourceManager i : readManager(x)) {
+				info += i.queryCustomerInfo(customerID).split("\n", 2)[1];
+			}
+		}
+		return info;
 	}
 
 	public int queryFlightPrice(int flightNumber) throws RemoteException {
@@ -177,10 +211,11 @@ public class Middleware implements IResourceManager{
 			Trace.warn("No flight manager available");
 			return false;
 		}
-		synchronized (lruRM) {
-			updateLRURM(ResItemEnum.FLIGHT);
-			return readManager(ResItemEnum.FLIGHT).get(readLRURM(ResItemEnum.FLIGHT)).reserveFlight(customerID, flightNumber);
+		boolean status = true;
+		for(IResourceManager x : readManager(ResItemEnum.FLIGHT)) {
+			status = x.reserveFlight(customerID, flightNumber) && status;
 		}
+		return status;
 	} 
 
 	/**
@@ -190,13 +225,15 @@ public class Middleware implements IResourceManager{
 	*/
 	public boolean reserveCar(int customerID, String location) throws RemoteException{
 		if (readManager(ResItemEnum.CAR).isEmpty()) {
-			Trace.warn("No car manager available");
+			Trace.warn("No Car manager available");
 			return false;
 		}
-		synchronized (lruRM) {
-			updateLRURM(ResItemEnum.CAR);
-			return readManager(ResItemEnum.CAR).get(readLRURM(ResItemEnum.CAR)).reserveCar(customerID, location);
+		boolean status = true;
+		for(IResourceManager x : readManager(ResItemEnum.CAR)) {
+			status = x.reserveCar(customerID, location) && status;
+			System.out.println("Reserving Car?");
 		}
+		return status;
 	} 
 
 	/**
@@ -205,14 +242,15 @@ public class Middleware implements IResourceManager{
 	* @return Success
 	*/
 	public boolean reserveRoom(int customerID, String location) throws RemoteException{
-		if (managers.get(ResItemEnum.ROOM).isEmpty()) {
-			Trace.warn("No room manager available");
+		if (readManager(ResItemEnum.ROOM).isEmpty()) {
+			Trace.warn("No Room manager available");
 			return false;
 		}
-		synchronized (lruRM) {
-			updateLRURM(ResItemEnum.ROOM);
-			return readManager(ResItemEnum.ROOM).get(readLRURM(ResItemEnum.ROOM)).reserveRoom(customerID, location);
-		}	
+		boolean status = true;
+		for(IResourceManager x : readManager(ResItemEnum.ROOM)) {
+			status = x.reserveRoom(customerID, location) && status;
+		}
+		return status;
 	} 
 
 	/**
@@ -221,7 +259,27 @@ public class Middleware implements IResourceManager{
 	* @return Success
 	*/
 	public boolean bundle(int customerID, Vector<String> flightNumbers, String location, boolean car, boolean room) throws RemoteException{
-		return false;
+		Trace.warn(Boolean.toString(car));
+		Trace.warn(Boolean.toString(car));
+		boolean status = true;
+		for(String s : flightNumbers) {
+			status = reserveFlight(customerID, Integer.parseInt(s)) && status;
+		}
+		if(car) {
+			Trace.warn("entered car");
+			status = reserveCar(customerID, location) && status;
+		}
+		if(room) {
+			Trace.warn("entered room");
+			status = reserveRoom(customerID, location) && status;
+			if(!status) {
+				deleteCustomer(customerID);
+				newCustomer(customerID);
+				return status;
+			}
+
+		}
+		return status;
 	} 
 
 	/**
@@ -269,12 +327,100 @@ public class Middleware implements IResourceManager{
 	}
 
 	public static void main(String[] args) throws RemoteException, AlreadyBoundException {
-		System.out.println("testing");
 		Middleware mid = new Middleware();
-		Middleware midproxy = (Middleware) UnicastRemoteObject.exportObject(mid, 0);
-		//Registry registry = LocateRegistry.getRegistry();
-		Registry registry = LocateRegistry.createRegistry(Integer.parseInt(args[0]));
-		registry.bind("mid",midproxy);
+		try {
+			for(ResItemEnum x : ResItemEnum.values()) {
+				for(String s : parseArgs(args).get(x)) {
+					Trace.warn(x.toString() + " " + s);
+					mid.connectServer(s, 3042, "Resources", x);
+				}
+			}
+			mid.makeServer(mid);
+		} 
+		catch (Exception e) {    
+			System.err.println((char)27 + "[31;1mClient exception: " + (char)27 + "[0mUncaught exception");
+			e.printStackTrace();
+			System.exit(1);
+		}
+
 	}
+	private void makeServer(Middleware mid) throws RemoteException, AlreadyBoundException {
+		try {
+			IResourceManager midproxy = (IResourceManager) UnicastRemoteObject.exportObject(mid, 0);
+			Registry l_registry;
+			try {
+				l_registry = LocateRegistry.createRegistry(port);
+			} catch (RemoteException e) {
+				l_registry = LocateRegistry.getRegistry(port);
+			}
+			final Registry registry = l_registry;
+			registry.rebind(mid.prefix + mid.name, midproxy);
+
+			Runtime.getRuntime().addShutdownHook(new Thread() {
+				public void run() {
+					try {
+						registry.unbind(mid.prefix + mid.name);
+						System.out.println("'" + mid.name + "' resource manager unbound");
+					}
+					catch(Exception e) {
+						System.err.println((char)27 + "[31;1mServer exception: " + (char)27 + "[0mUncaught exception");
+						e.printStackTrace();
+					}
+				}
+			});                                       
+			System.out.println("'" + mid.name + "' resource manager server ready and bound to '" + mid.prefix + mid.name + "'");
+		}
+		catch (Exception e) {
+			System.err.println((char)27 + "[31;1mServer exception: " + (char)27 + "[0mUncaught exception");
+			e.printStackTrace();
+			System.exit(1);
+		}
+	}
+	private void connectServer(String server, int port, String name, ResItemEnum type)
+	{
+		try {
+			boolean first = true;
+			while (true) {
+				try {
+					Registry registry = LocateRegistry.getRegistry(server, port);
+					readManager(type).add((IResourceManager)registry.lookup(prefix + name));
+					System.out.println("Connected to '" + name + "' server [" + server + ":" + port + "/" + prefix + name + "]");
+					break;
+				}
+				catch (NotBoundException|RemoteException e) {
+					if (first) {
+						System.out.println("Waiting for '" + name + "' server [" + server + ":" + port + "/" + prefix + name + "]");
+						first = false;
+					}
+				}
+				Thread.sleep(500);
+			}
+		}
+		catch (Exception e) {
+			System.err.println((char)27 + "[31;1mServer exception: " + (char)27 + "[0mUncaught exception");
+			e.printStackTrace();
+			System.exit(1);
+		}
+	}
+	private static HashMap<ResItemEnum, List<String>> parseArgs(String[] args) {
+		HashMap<ResItemEnum, List<String>> hosts = new HashMap<ResItemEnum,  List<String>>();
+		int i = 0;
+		for(ResItemEnum x : ResItemEnum.values()) {
+			ArrayList<String> hostList = new ArrayList<String>();
+			for(int j = 0; j <  args[i].length(); ++j) {
+				if(hostList.isEmpty() || args[i].charAt(j) == ',') {
+					if(hostList.isEmpty()) {--j;}
+					hostList.add("");
+				}	
+				else {
+					hostList.set(hostList.size() - 1, hostList.get(hostList.size() - 1) + args[i].charAt(j));
+				}
+			}	
+			++i;
+			hosts.put(x, hostList);
+		}
+		return hosts;
+	}
+
 }
 
