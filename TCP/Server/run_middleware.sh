@@ -2,7 +2,8 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+TCP_DIR=$(dirname "$SCRIPT_DIR")
 
-make -C "$PROJECT_DIR" all
-exec java -cp "$PROJECT_DIR/build" Server.TCP.TCPMiddlewareServer "$@"
+make -C "$SCRIPT_DIR" compile-server-tcp
+exec java -cp "$SCRIPT_DIR:$TCP_DIR" \
+	Server.TCP.TCPMiddlewareServer "$@"

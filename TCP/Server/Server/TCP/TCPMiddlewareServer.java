@@ -1,418 +1,384 @@
 package Server.TCP;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
+import Shared.Request;
+import Shared.Response;
+import Shared.TcpChannel;
+
 import java.io.EOFException;
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.rmi.RemoteException;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
 import java.util.EnumMap;
-import java.util.EnumSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import java.util.Vector;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
-public final class TCPMiddlewareServer implements AutoCloseable
+public final class TCPMiddlewareServer
 {
-	private static final int CONNECT_TIMEOUT_MILLIS = 5000;
+	private static final int DEFAULT_PORT = 3042;
 
-	private final EnumMap<ResourceType, BackendLink> backends =
-		new EnumMap<ResourceType, BackendLink>(ResourceType.class);
-	private final ConcurrentMap<Long, PendingCall> pending =
-		new ConcurrentHashMap<Long, PendingCall>();
-	private final Set<Socket> clientSockets = ConcurrentHashMap.newKeySet();
-	private final ExecutorService clientHandlers = Executors.newCachedThreadPool();
-	private final AtomicLong requestIds = new AtomicLong();
-	private final AtomicInteger generatedCustomerIds = new AtomicInteger(100000);
-	private final AtomicBoolean running = new AtomicBoolean();
-	private final int requestedPort;
-	private ServerSocket listener;
-
-	public static final class Endpoint
+	public static void main(String[] args)
 	{
-		public final String host;
-		public final int port;
-
-		public Endpoint(String host, int port)
+		if (args.length < 3 || args.length > 7)
 		{
-			if (host == null || host.trim().isEmpty())
+			System.err.println("Usage: java Server.TCP.TCPMiddlewareServer "
+					+ "<flight_host> <car_host> <room_host> "
+					+ "[flight_port [car_port [room_port [middleware_port]]]]");
+			System.exit(1);
+		}
+
+		EnumMap<ResourceType, Endpoint> endpoints = new EnumMap<ResourceType, Endpoint>(ResourceType.class);
+		endpoints.put(ResourceType.FLIGHT, new Endpoint(args[0], portArg(args, 3)));
+		endpoints.put(ResourceType.CAR, new Endpoint(args[1], portArg(args, 4)));
+		endpoints.put(ResourceType.ROOM, new Endpoint(args[2], portArg(args, 5)));
+		int listenPort = portArg(args, 6);
+
+		TCPMiddlewareServer middleware = new TCPMiddlewareServer(endpoints);
+		middleware.listen(listenPort);
+	}
+
+	private final EnumMap<ResourceType, Endpoint> endpoints;
+	private final Object customerLock = new Object();
+	private int nextCustomerId = (int)(System.currentTimeMillis() & 0x7fffffff);
+
+	private TCPMiddlewareServer(EnumMap<ResourceType, Endpoint> endpoints)
+	{
+		this.endpoints = endpoints;
+	}
+
+	private void listen(int port)
+	{
+		try (ServerSocket server = new ServerSocket(port))
+		{
+			System.out.println("TCP middleware listening on port " + port);
+			while (true)
 			{
-				throw new IllegalArgumentException("Backend host cannot be empty");
+				Socket socket = server.accept();
+				new Thread(new ClientHandler(socket), "tcp-middleware-client").start();
 			}
-			if (port < 1 || port > 65535)
-			{
-				throw new IllegalArgumentException("Backend port must be between 1 and 65535");
-			}
-			this.host = host;
-			this.port = port;
+		}
+		catch (IOException e)
+		{
+			System.err.println("TCP middleware failed: " + e);
+			System.exit(1);
 		}
 	}
 
-	public TCPMiddlewareServer(Map<ResourceType, Endpoint> endpoints, int port) throws IOException
+	private Response dispatch(Request request)
 	{
-		EnumMap<ResourceType, Endpoint> configuredEndpoints =
-			new EnumMap<ResourceType, Endpoint>(endpoints);
-		if (configuredEndpoints.size() != ResourceType.values().length)
-		{
-			throw new IllegalArgumentException("An endpoint is required for Flights, Cars, and Rooms");
-		}
-		if (port < 0 || port > 65535)
-		{
-			throw new IllegalArgumentException("Middleware port must be between 0 and 65535");
-		}
-		this.requestedPort = port;
-
 		try
 		{
-			for (ResourceType type : ResourceType.values())
+			ResourceType type = resourceType(request.command);
+			if (type != null)
 			{
-				Endpoint endpoint = configuredEndpoints.get(type);
-				if (endpoint == null)
-				{
-					throw new IllegalArgumentException("Missing endpoint for " + type.name);
-				}
-				backends.put(type, new BackendLink(type, endpoint));
+				return Response.success(call(type, request));
+			}
+
+			switch (request.command)
+			{
+				case "newCustomer":
+					if (request.args.length == 0)
+					{
+						return Response.success(newCustomer());
+					}
+					return Response.success(newCustomer((Integer)request.args[0]));
+				case "deleteCustomer":
+					return Response.success(deleteCustomer((Integer)request.args[0]));
+				case "queryCustomerInfo":
+					return Response.success(queryCustomerInfo((Integer)request.args[0]));
+				case "bundle":
+					return Response.success(bundle(request));
+				case "getName":
+					return Response.success("Middleware");
+				default:
+					throw new IllegalArgumentException("Unknown command: " + request.command);
 			}
 		}
-		catch (IOException | RuntimeException e)
+		catch (RemoteException | RuntimeException e)
 		{
-			closeBackends();
+			return Response.failure(e.toString());
+		}
+	}
+
+	private Object call(ResourceType type, Request request) throws RemoteException
+	{
+		Endpoint endpoint = endpoints.get(type);
+		try (TcpChannel channel = new TcpChannel(new Socket(endpoint.host, endpoint.port)))
+		{
+			channel.sendRequest(request);
+			Response response = channel.receiveResponse();
+			if (!response.isSuccess())
+			{
+				throw new RemoteException(type + " resource manager failed: " + response.error);
+			}
+			return response.result;
+		}
+		catch (IOException | ClassNotFoundException e)
+		{
+			throw new RemoteException("Could not communicate with " + type + " resource manager", e);
+		}
+	}
+
+	private int newCustomer() throws RemoteException
+	{
+		synchronized (customerLock)
+		{
+			while (true)
+			{
+				int customerId = nextCustomerId++;
+				if (nextCustomerId <= 0)
+				{
+					nextCustomerId = 1;
+				}
+
+				List<ResourceType> created = new ArrayList<ResourceType>();
+				boolean available = true;
+				try
+				{
+					for (ResourceType type : ResourceType.values())
+					{
+						if (Boolean.TRUE.equals(call(type, Request.of("newCustomer", customerId))))
+						{
+							created.add(type);
+						}
+						else
+						{
+							available = false;
+							break;
+						}
+					}
+				}
+				catch (RemoteException e)
+				{
+					rollbackCustomerCreation(customerId, created, e);
+					throw e;
+				}
+
+				if (available)
+				{
+					return customerId;
+				}
+				rollbackCustomerCreation(customerId, created, null);
+			}
+		}
+	}
+
+	private boolean newCustomer(int customerId) throws RemoteException
+	{
+		synchronized (customerLock)
+		{
+			List<ResourceType> created = new ArrayList<ResourceType>();
+			boolean available = true;
+			try
+			{
+				for (ResourceType type : ResourceType.values())
+				{
+					if (!Boolean.TRUE.equals(call(type, Request.of("newCustomer", customerId))))
+					{
+						available = false;
+						break;
+					}
+					created.add(type);
+				}
+			}
+			catch (RemoteException e)
+			{
+				rollbackCustomerCreation(customerId, created, e);
+				throw e;
+			}
+			if (!available)
+			{
+				rollbackCustomerCreation(customerId, created, null);
+			}
+			return available;
+		}
+	}
+
+	private void rollbackCustomerCreation(int customerId, List<ResourceType> created,
+			RemoteException originalFailure) throws RemoteException
+	{
+		RemoteException rollbackFailure = null;
+		for (ResourceType type : created)
+		{
+			try
+			{
+				if (!Boolean.TRUE.equals(call(type, Request.of("deleteCustomer", customerId))))
+				{
+					throw new RemoteException("Customer rollback returned false at " + type);
+				}
+			}
+			catch (RemoteException e)
+			{
+				if (rollbackFailure == null)
+				{
+					rollbackFailure = e;
+				}
+				else
+				{
+					rollbackFailure.addSuppressed(e);
+				}
+			}
+		}
+
+		if (rollbackFailure != null)
+		{
+			String cause = originalFailure == null ? "customer ID collision"
+					: originalFailure.toString();
+			throw new RemoteException("Could not roll back customer creation after " + cause,
+					rollbackFailure);
+		}
+	}
+
+	private boolean deleteCustomer(int customerId) throws RemoteException
+	{
+		synchronized (customerLock)
+		{
+			boolean deleted = true;
+			for (ResourceType type : ResourceType.values())
+			{
+				deleted = Boolean.TRUE.equals(call(type,
+						Request.of("deleteCustomer", customerId))) && deleted;
+			}
+			return deleted;
+		}
+	}
+
+	private String queryCustomerInfo(int customerId) throws RemoteException
+	{
+		StringBuilder bill = new StringBuilder("Bill for customer ")
+				.append(customerId).append('\n');
+		long total = 0;
+		for (ResourceType type : ResourceType.values())
+		{
+			String resourceBill = (String)call(type,
+					Request.of("queryCustomerInfo", customerId));
+			if (resourceBill != null && !resourceBill.isEmpty())
+			{
+				String[] lines = resourceBill.split("\n");
+				for (int i = 1; i < lines.length; ++i)
+				{
+					if (lines[i].startsWith("Total cost: $"))
+					{
+						total += Long.parseLong(lines[i].substring("Total cost: $".length()));
+					}
+					else if (!lines[i].isEmpty())
+					{
+						bill.append(lines[i]).append('\n');
+					}
+				}
+			}
+		}
+		bill.append("Total cost: $").append(total).append('\n');
+		return bill.toString();
+	}
+
+	private boolean bundle(Request request) throws RemoteException
+	{
+		Object[] args = request.args;
+		int customerId = (Integer)args[0];
+		Vector<?> requestedFlights = (Vector<?>)args[1];
+		String location = (String)args[2];
+		boolean car = (Boolean)args[3];
+		boolean room = (Boolean)args[4];
+		List<Integer> flights = new ArrayList<Integer>();
+		for (Object flight : requestedFlights)
+		{
+			flights.add(Integer.valueOf((String)flight));
+		}
+
+		List<ReservationUndo> completed = new ArrayList<ReservationUndo>();
+		try
+		{
+			for (Integer flight : flights)
+			{
+				if (!reserve(ResourceType.FLIGHT,
+						Request.of("reserveFlight", customerId, flight),
+						Request.of("cancelReservation", customerId, "flight", flight.toString()),
+						completed))
+				{
+					rollbackBundle(completed);
+					return false;
+				}
+			}
+			if (car && !reserve(ResourceType.CAR,
+					Request.of("reserveCar", customerId, location),
+					Request.of("cancelReservation", customerId, "car", location), completed))
+			{
+				rollbackBundle(completed);
+				return false;
+			}
+			if (room && !reserve(ResourceType.ROOM,
+					Request.of("reserveRoom", customerId, location),
+					Request.of("cancelReservation", customerId, "room", location), completed))
+			{
+				rollbackBundle(completed);
+				return false;
+			}
+			return true;
+		}
+		catch (RemoteException e)
+		{
+			try
+			{
+				rollbackBundle(completed);
+			}
+			catch (RemoteException rollbackFailure)
+			{
+				throw new RemoteException("Bundle failed and rollback was incomplete: "
+						+ rollbackFailure, e);
+			}
 			throw e;
 		}
 	}
 
-	public synchronized int start() throws IOException
+	private boolean reserve(ResourceType type, Request reservation, Request undo,
+			List<ReservationUndo> completed) throws RemoteException
 	{
-		if (running.get())
+		if (!Boolean.TRUE.equals(call(type, reservation)))
 		{
-			return listener.getLocalPort();
+			return false;
 		}
-		listener = new ServerSocket(requestedPort);
-		running.set(true);
-		for (BackendLink backend : backends.values())
-		{
-			backend.startReader();
-		}
-		Thread acceptor = new Thread(this::acceptClients, "tcp-middleware-accept");
-		acceptor.setDaemon(true);
-		acceptor.start();
-		return listener.getLocalPort();
+		completed.add(new ReservationUndo(type, undo));
+		return true;
 	}
 
-	private void acceptClients()
+	private void rollbackBundle(List<ReservationUndo> completed) throws RemoteException
 	{
-		while (running.get())
+		RemoteException rollbackFailure = null;
+		for (int i = completed.size() - 1; i >= 0; --i)
 		{
+			ReservationUndo undo = completed.get(i);
 			try
 			{
-				Socket socket = listener.accept();
-				clientSockets.add(socket);
-				clientHandlers.execute(() -> receiveClientRequest(socket));
-			}
-			catch (IOException e)
-			{
-				if (running.get())
+				if (!Boolean.TRUE.equals(call(undo.type, undo.request)))
 				{
-					System.err.println("Middleware accept failed: " + e.getMessage());
+					throw new RemoteException("Could not undo " + undo.request.command
+							+ " at " + undo.type);
 				}
 			}
-		}
-	}
-
-	private void receiveClientRequest(Socket socket)
-	{
-		ClientReply reply = null;
-		try
-		{
-			socket.setSoTimeout(30000);
-			DataInputStream input = new DataInputStream(socket.getInputStream());
-			DataOutputStream output = new DataOutputStream(socket.getOutputStream());
-			TcpProtocol.Request request = TcpProtocol.readRequest(input);
-			reply = new ClientReply(request.id, socket, output);
-			route(request, reply);
-		}
-		catch (EOFException e)
-		{
-			closeClient(socket);
-		}
-		catch (Exception e)
-		{
-			if (reply == null)
+			catch (RemoteException e)
 			{
-				try
+				if (rollbackFailure == null)
 				{
-					reply = new ClientReply(0, socket, new DataOutputStream(socket.getOutputStream()));
-				}
-				catch (IOException ignored)
-				{
-					closeClient(socket);
-					return;
-				}
-			}
-			reply.failure(errorMessage(e));
-		}
-	}
-
-	private void route(TcpProtocol.Request request, ClientReply reply)
-	{
-		String method = request.method;
-		Object[] args = request.arguments;
-		if ("getName".equals(method))
-		{
-			requireCount(request, 0);
-			reply.success("Middleware");
-		}
-		else if ("bundle".equals(method))
-		{
-			try
-			{
-				requireCount(request, 5);
-				new BundleExecution(
-					integer(args[0]), stringVector(args[1]), string(args[2]),
-					bool(args[3]), bool(args[4]), reply).advance();
-			}
-			catch (Exception e)
-			{
-				reply.failure(errorMessage(e));
-			}
-		}
-		else if ("newCustomer".equals(method) && args.length == 0)
-		{
-			createGeneratedCustomer(reply);
-		}
-		else if ("newCustomer".equals(method) && args.length == 1)
-		{
-			routeManualCustomer(request, reply);
-		}
-		else if ("deleteCustomer".equals(method))
-		{
-			requireCount(request, 1);
-			dispatchToAll(request, result -> reply.success(allTrue(result)));
-		}
-		else if ("queryCustomerInfo".equals(method))
-		{
-			requireCount(request, 1);
-			dispatchToAll(request, result -> {
-				String error = firstError(result);
-				if (error != null)
-				{
-					reply.failure(error);
+					rollbackFailure = e;
 				}
 				else
 				{
-					try
-					{
-						reply.success(mergeBills(integer(args[0]), result));
-					}
-					catch (Exception e)
-					{
-						reply.failure(errorMessage(e));
-					}
+					rollbackFailure.addSuppressed(e);
 				}
-			});
-		}
-		else
-		{
-			ResourceType type = resourceFor(method);
-			if (type == null)
-			{
-				reply.failure("Unsupported middleware method: " + method);
-				return;
-			}
-			dispatchTo(type, method, args, response -> sendClientResponse(reply, response));
-		}
-	}
-
-	private void routeManualCustomer(TcpProtocol.Request request, ClientReply reply)
-	{
-		try
-		{
-			requireCount(request, 1);
-			final int customerId = integer(request.arguments[0]);
-			dispatchToAll(request, result -> {
-				String error = firstError(result);
-				if (error != null)
-				{
-					cleanupPartialCustomer(customerId, successfulTargets(result), cleanup -> {
-						String cleanupError = firstError(cleanup);
-						reply.failure(cleanupError == null ? error :
-							error + "; partial customer cleanup failed: " + cleanupError);
-					});
-				}
-				else if (allTrue(result))
-				{
-					reply.success(Boolean.TRUE);
-				}
-				else
-				{
-					cleanupPartialCustomer(customerId, successfulTargets(result), cleanup -> {
-						if (firstError(cleanup) != null ||
-							!allTargetsTrue(cleanup, successfulTargets(result)))
-						{
-							reply.failure("Customer creation failed and partial registration cleanup failed");
-						}
-						else
-						{
-							reply.success(Boolean.FALSE);
-						}
-					});
-				}
-			});
-		}
-		catch (Exception e)
-		{
-			reply.failure(errorMessage(e));
-		}
-	}
-
-	private void createGeneratedCustomer(ClientReply reply)
-	{
-		int customerId = generatedCustomerIds.getAndIncrement();
-		if (customerId <= 0)
-		{
-			reply.failure("Customer ID space exhausted");
-			return;
-		}
-		dispatchToAll("newCustomer", new Object[] { Integer.valueOf(customerId) }, result -> {
-			String error = firstError(result);
-			if (error != null)
-			{
-				cleanupPartialCustomer(customerId, successfulTargets(result), cleanup -> {
-					String cleanupError = firstError(cleanup);
-					reply.failure(cleanupError == null ? error :
-						error + "; partial customer cleanup failed: " + cleanupError);
-				});
-			}
-			else if (allTrue(result))
-			{
-				reply.success(Integer.valueOf(customerId));
-			}
-			else
-			{
-				cleanupPartialCustomer(customerId, successfulTargets(result),
-					cleanup -> {
-						Collection<ResourceType> created = successfulTargets(result);
-						if (firstError(cleanup) != null || !allTargetsTrue(cleanup, created))
-						{
-							reply.failure("Generated customer registration cleanup failed");
-						}
-						else
-						{
-							createGeneratedCustomer(reply);
-						}
-					});
-			}
-		});
-	}
-
-	private void cleanupPartialCustomer(int customerId, Collection<ResourceType> targets,
-		Completion completion)
-	{
-		if (targets.isEmpty())
-		{
-			completion.complete(new EnumMap<ResourceType, TcpProtocol.Response>(ResourceType.class));
-			return;
-		}
-		dispatchToMany(targets, "deleteCustomer", new Object[] { Integer.valueOf(customerId) },
-			completion);
-	}
-
-	private void dispatchToAll(TcpProtocol.Request request, Completion completion)
-	{
-		dispatchToMany(Arrays.asList(ResourceType.values()), request.method, request.arguments,
-			completion);
-	}
-
-	private void dispatchToAll(String method, Object[] args, Completion completion)
-	{
-		dispatchToMany(Arrays.asList(ResourceType.values()), method, args, completion);
-	}
-
-	private void dispatchTo(ResourceType type, String method, Object[] args,
-		SingleCompletion completion)
-	{
-		dispatchToMany(Arrays.asList(type), method, args, result ->
-			completion.complete(result.get(type)));
-	}
-
-	private void dispatchToMany(Collection<ResourceType> targets, String method, Object[] args,
-		Completion completion)
-	{
-		if (targets.isEmpty())
-		{
-			completion.complete(new EnumMap<ResourceType, TcpProtocol.Response>(ResourceType.class));
-			return;
-		}
-		long id = requestIds.incrementAndGet();
-		PendingCall call = new PendingCall(id, targets, completion);
-		pending.put(Long.valueOf(id), call);
-		TcpProtocol.Request request = new TcpProtocol.Request(id, method, args);
-		for (ResourceType type : targets)
-		{
-			BackendLink backend = backends.get(type);
-			try
-			{
-				backend.send(request);
-			}
-			catch (IOException e)
-			{
-				call.accept(type, TcpProtocol.Response.failure(id,
-					"Could not send request to " + type.name + ": " + e.getMessage()));
 			}
 		}
-	}
-
-	private void sendClientResponse(ClientReply reply, TcpProtocol.Response response)
-	{
-		if (response == null)
+		completed.clear();
+		if (rollbackFailure != null)
 		{
-			reply.failure("ResourceManager did not return a response");
-		}
-		else if (response.error != null)
-		{
-			reply.failure(response.error);
-		}
-		else
-		{
-			reply.success(response.value);
+			throw new RemoteException("Bundle rollback was incomplete", rollbackFailure);
 		}
 	}
 
-	private void onBackendResponse(ResourceType type, TcpProtocol.Response response)
+	private static ResourceType resourceType(String command)
 	{
-		PendingCall call = pending.get(Long.valueOf(response.id));
-		if (call != null)
-		{
-			call.accept(type, response);
-		}
-	}
-
-	private void onBackendFailure(ResourceType type, String error)
-	{
-		for (PendingCall call : pending.values())
-		{
-			if (call.expects(type))
-			{
-				call.accept(type, TcpProtocol.Response.failure(call.id, error));
-			}
-		}
-	}
-
-	private static ResourceType resourceFor(String method)
-	{
-		switch (method)
+		switch (command)
 		{
 			case "addFlight":
 			case "deleteFlight":
@@ -437,530 +403,69 @@ public final class TCPMiddlewareServer implements AutoCloseable
 		}
 	}
 
-	private static boolean allTrue(Map<ResourceType, TcpProtocol.Response> responses)
+	private static int portArg(String[] args, int index)
 	{
-		if (responses.size() != ResourceType.values().length)
-		{
-			return false;
-		}
-		for (TcpProtocol.Response response : responses.values())
-		{
-			if (response == null || response.error != null || !Boolean.TRUE.equals(response.value))
-			{
-				return false;
-			}
-		}
-		return true;
+		return args.length > index ? Integer.parseInt(args[index]) : DEFAULT_PORT;
 	}
 
-	private static boolean allTargetsTrue(Map<ResourceType, TcpProtocol.Response> responses,
-		Collection<ResourceType> targets)
+	private final class ClientHandler implements Runnable
 	{
-		if (responses.size() != targets.size())
-		{
-			return false;
-		}
-		for (ResourceType type : targets)
-		{
-			TcpProtocol.Response response = responses.get(type);
-			if (response == null || response.error != null || !Boolean.TRUE.equals(response.value))
-			{
-				return false;
-			}
-		}
-		return true;
-	}
+		private final Socket socket;
 
-	private static String firstError(Map<ResourceType, TcpProtocol.Response> responses)
-	{
-		for (TcpProtocol.Response response : responses.values())
+		private ClientHandler(Socket socket)
 		{
-			if (response == null)
-			{
-				return "ResourceManager did not return a response";
-			}
-			if (response.error != null)
-			{
-				return response.error;
-			}
+			this.socket = socket;
 		}
-		return null;
-	}
 
-	private static Collection<ResourceType> successfulTargets(
-		Map<ResourceType, TcpProtocol.Response> responses)
-	{
-		List<ResourceType> successful = new ArrayList<ResourceType>();
-		for (Map.Entry<ResourceType, TcpProtocol.Response> entry : responses.entrySet())
+		public void run()
 		{
-			TcpProtocol.Response response = entry.getValue();
-			if (response != null && response.error == null && Boolean.TRUE.equals(response.value))
+			try (TcpChannel channel = new TcpChannel(socket))
 			{
-				successful.add(entry.getKey());
-			}
-		}
-		return successful;
-	}
-
-	private static String mergeBills(int customerId,
-		Map<ResourceType, TcpProtocol.Response> responses)
-	{
-		StringBuilder entries = new StringBuilder();
-		long total = 0;
-		boolean customerExists = false;
-		for (ResourceType type : ResourceType.values())
-		{
-			TcpProtocol.Response response = responses.get(type);
-			if (response == null || !(response.value instanceof String))
-			{
-				continue;
-			}
-			String managerBill = (String)response.value;
-			if (managerBill.isEmpty())
-			{
-				continue;
-			}
-			customerExists = true;
-			int firstLine = managerBill.indexOf('\n');
-			if (firstLine < 0)
-			{
-				continue;
-			}
-			String[] lines = managerBill.substring(firstLine + 1).split("\n");
-			for (String line : lines)
-			{
-				if (line.startsWith("Total cost: $"))
+				while (true)
 				{
-					total += Long.parseLong(line.substring("Total cost: $".length()));
-				}
-				else if (!line.isEmpty())
-				{
-					entries.append(line).append('\n');
+					Request request = channel.receiveRequest();
+					channel.sendResponse(dispatch(request));
 				}
 			}
-		}
-		if (!customerExists)
-		{
-			return "";
-		}
-		return "Bill for customer " + customerId + "\n" + entries +
-			"Total cost: $" + total + "\n";
-	}
-
-	private static void requireCount(TcpProtocol.Request request, int expected)
-	{
-		if (request.arguments.length != expected)
-		{
-			throw new IllegalArgumentException("Invalid argument count for " + request.method);
-		}
-	}
-
-	private static int integer(Object value)
-	{
-		if (!(value instanceof Integer))
-		{
-			throw new IllegalArgumentException("Expected integer argument");
-		}
-		return ((Integer)value).intValue();
-	}
-
-	private static String string(Object value)
-	{
-		if (!(value instanceof String))
-		{
-			throw new IllegalArgumentException("Expected string argument");
-		}
-		return (String)value;
-	}
-
-	private static boolean bool(Object value)
-	{
-		if (!(value instanceof Boolean))
-		{
-			throw new IllegalArgumentException("Expected boolean argument");
-		}
-		return ((Boolean)value).booleanValue();
-	}
-
-	private static Vector<String> stringVector(Object value)
-	{
-		if (!(value instanceof Vector<?>))
-		{
-			throw new IllegalArgumentException("Expected a vector of flight numbers");
-		}
-		Vector<?> vector = (Vector<?>)value;
-		Vector<String> result = new Vector<String>(vector.size());
-		for (Object item : vector)
-		{
-			if (!(item instanceof String))
+			catch (EOFException e)
 			{
-				throw new IllegalArgumentException("Flight numbers must be strings");
+				// Client closed its persistent connection.
 			}
-			result.add((String)item);
-		}
-		return result;
-	}
-
-	private static String errorMessage(Exception e)
-	{
-		String message = e.getMessage();
-		return e.getClass().getSimpleName() + (message == null ? "" : ": " + message);
-	}
-
-	private void acceptBackendResponse(ResourceType type, Socket socket, DataInputStream input)
-	{
-		try (Socket backendSocket = socket)
-		{
-			while (running.get())
+			catch (IOException | ClassNotFoundException e)
 			{
-				onBackendResponse(type, TcpProtocol.readResponse(input));
-			}
-		}
-		catch (IOException e)
-		{
-			if (running.get())
-			{
-				onBackendFailure(type, type.name + " ResourceManager connection lost: " + e.getMessage());
+				System.err.println("TCP middleware client connection failed: " + e);
 			}
 		}
 	}
 
-	private void closeClient(Socket socket)
+	private enum ResourceType
 	{
-		clientSockets.remove(socket);
-		try
+		FLIGHT,
+		CAR,
+		ROOM
+	}
+
+	private static final class Endpoint
+	{
+		private final String host;
+		private final int port;
+
+		private Endpoint(String host, int port)
 		{
-			socket.close();
-		}
-		catch (IOException ignored)
-		{
+			this.host = host;
+			this.port = port;
 		}
 	}
 
-	private void closeBackends()
-	{
-		for (BackendLink backend : backends.values())
-		{
-			backend.close();
-		}
-	}
-
-	@Override
-	public synchronized void close()
-	{
-		running.set(false);
-		if (listener != null)
-		{
-			try
-			{
-				listener.close();
-			}
-			catch (IOException ignored)
-			{
-			}
-		}
-		for (Socket socket : clientSockets)
-		{
-			closeClient(socket);
-		}
-		closeBackends();
-		clientHandlers.shutdownNow();
-	}
-
-	private final class BackendLink
+	private static final class ReservationUndo
 	{
 		private final ResourceType type;
-		private final Socket socket;
-		private final DataInputStream input;
-		private final DataOutputStream output;
+		private final Request request;
 
-		BackendLink(ResourceType type, Endpoint endpoint) throws IOException
+		private ReservationUndo(ResourceType type, Request request)
 		{
 			this.type = type;
-			socket = new Socket();
-			socket.connect(new InetSocketAddress(endpoint.host, endpoint.port),
-				CONNECT_TIMEOUT_MILLIS);
-			output = new DataOutputStream(socket.getOutputStream());
-			input = new DataInputStream(socket.getInputStream());
+			this.request = request;
 		}
-
-		void startReader()
-		{
-			Thread reader = new Thread(() -> acceptBackendResponse(type, socket, input),
-				"tcp-middleware-" + type.name.toLowerCase() + "-responses");
-			reader.setDaemon(true);
-			reader.start();
-		}
-
-		void send(TcpProtocol.Request request) throws IOException
-		{
-			synchronized (output)
-			{
-				TcpProtocol.writeRequest(output, request);
-			}
-		}
-
-		void close()
-		{
-			try
-			{
-				socket.close();
-			}
-			catch (IOException ignored)
-			{
-			}
-		}
-	}
-
-	private final class PendingCall
-	{
-		private final long id;
-		private final Set<ResourceType> targets;
-		private final Map<ResourceType, TcpProtocol.Response> responses =
-			new EnumMap<ResourceType, TcpProtocol.Response>(ResourceType.class);
-		private final Completion completion;
-		private boolean completed;
-
-		PendingCall(long id, Collection<ResourceType> targets, Completion completion)
-		{
-			this.id = id;
-			this.targets = EnumSet.noneOf(ResourceType.class);
-			this.targets.addAll(targets);
-			this.completion = completion;
-		}
-
-		boolean expects(ResourceType type)
-		{
-			return targets.contains(type);
-		}
-
-		void accept(ResourceType type, TcpProtocol.Response response)
-		{
-			Map<ResourceType, TcpProtocol.Response> result = null;
-			synchronized (this)
-			{
-				if (completed || !targets.contains(type) || responses.containsKey(type))
-				{
-					return;
-				}
-				responses.put(type, response);
-				if (responses.size() == targets.size())
-				{
-					completed = true;
-					result = new EnumMap<ResourceType, TcpProtocol.Response>(responses);
-				}
-			}
-			if (result != null)
-			{
-				pending.remove(Long.valueOf(id), this);
-				completion.complete(result);
-			}
-		}
-	}
-
-	private final class ClientReply
-	{
-		private final long requestId;
-		private final Socket socket;
-		private final DataOutputStream output;
-		private boolean completed;
-
-		ClientReply(long requestId, Socket socket, DataOutputStream output)
-		{
-			this.requestId = requestId;
-			this.socket = socket;
-			this.output = output;
-		}
-
-		void success(Object value)
-		{
-			respond(TcpProtocol.Response.success(requestId, value));
-		}
-
-		void failure(String error)
-		{
-			respond(TcpProtocol.Response.failure(requestId, error));
-		}
-
-		private void respond(TcpProtocol.Response response)
-		{
-			synchronized (this)
-			{
-				if (completed)
-				{
-					return;
-				}
-				completed = true;
-			}
-			try
-			{
-				TcpProtocol.writeResponse(output, response);
-			}
-			catch (IOException e)
-			{
-				if (running.get())
-				{
-					System.err.println("Could not reply to client: " + e.getMessage());
-				}
-			}
-			finally
-			{
-				closeClient(socket);
-			}
-		}
-	}
-
-	private final class BundleExecution
-	{
-		private final int customerId;
-		private final List<BundleStep> steps = new ArrayList<BundleStep>();
-		private final List<BundleStep> completedSteps = new ArrayList<BundleStep>();
-		private final ClientReply reply;
-		private int index;
-
-		BundleExecution(int customerId, Vector<String> flights, String location,
-			boolean car, boolean room, ClientReply reply)
-		{
-			if (flights.isEmpty())
-			{
-				throw new IllegalArgumentException("A bundle must contain at least one flight");
-			}
-			this.customerId = customerId;
-			this.reply = reply;
-			for (String flight : flights)
-			{
-				Integer.valueOf(flight);
-				steps.add(new BundleStep(ResourceType.FLIGHT, "reserveFlight",
-					new Object[] { Integer.valueOf(customerId), Integer.valueOf(flight) },
-					"flight", flight));
-			}
-			if (car)
-			{
-				steps.add(new BundleStep(ResourceType.CAR, "reserveCar",
-					new Object[] { Integer.valueOf(customerId), location }, "car", location));
-			}
-			if (room)
-			{
-				steps.add(new BundleStep(ResourceType.ROOM, "reserveRoom",
-					new Object[] { Integer.valueOf(customerId), location }, "room", location));
-			}
-		}
-
-		void advance()
-		{
-			if (index == steps.size())
-			{
-				reply.success(Boolean.TRUE);
-				return;
-			}
-			BundleStep step = steps.get(index);
-			dispatchTo(step.type, step.method, step.arguments, response -> {
-				if (response != null && response.error == null && Boolean.TRUE.equals(response.value))
-				{
-					completedSteps.add(step);
-					index++;
-					advance();
-				}
-				else
-				{
-					String error = response == null ? "ResourceManager did not return a response" :
-						response.error;
-					rollback(completedSteps.size() - 1, error);
-				}
-			});
-		}
-
-		private void rollback(int rollbackIndex, String cause)
-		{
-			if (rollbackIndex < 0)
-			{
-				if (cause == null)
-				{
-					reply.success(Boolean.FALSE);
-				}
-				else
-				{
-					reply.failure("Bundle failed; reservations were rolled back: " + cause);
-				}
-				return;
-			}
-			BundleStep step = completedSteps.get(rollbackIndex);
-			dispatchTo(step.type, "cancelReservation",
-				new Object[] { Integer.valueOf(customerId), step.cancelType, step.identifier },
-				response -> {
-					if (response == null || response.error != null ||
-						!Boolean.TRUE.equals(response.value))
-					{
-						String rollbackError = response == null ? "missing rollback response" :
-							(response.error == null ? "reservation could not be rolled back" :
-								response.error);
-						reply.failure("Bundle failed (" + cause + "); rollback failed: " + rollbackError);
-						return;
-					}
-					rollback(rollbackIndex - 1, cause);
-				});
-		}
-	}
-
-	private static final class BundleStep
-	{
-		final ResourceType type;
-		final String method;
-		final Object[] arguments;
-		final String cancelType;
-		final String identifier;
-
-		BundleStep(ResourceType type, String method, Object[] arguments,
-			String cancelType, String identifier)
-		{
-			this.type = type;
-			this.method = method;
-			this.arguments = arguments;
-			this.cancelType = cancelType;
-			this.identifier = identifier;
-		}
-	}
-
-	private interface Completion
-	{
-		void complete(Map<ResourceType, TcpProtocol.Response> responses);
-	}
-
-	private interface SingleCompletion
-	{
-		void complete(TcpProtocol.Response response);
-	}
-
-	private static Map<ResourceType, Endpoint> endpoints(String[] args)
-	{
-		Map<ResourceType, Endpoint> result = new EnumMap<ResourceType, Endpoint>(ResourceType.class);
-		for (ResourceType type : ResourceType.values())
-		{
-			String value = args.length > 0 ? args[type.ordinal()] :
-				"localhost:" + type.defaultPort;
-			int separator = value.lastIndexOf(':');
-			String host = separator < 0 ? value : value.substring(0, separator);
-			int port = separator < 0 ? type.defaultPort :
-				Integer.parseInt(value.substring(separator + 1));
-			result.put(type, new Endpoint(host, port));
-		}
-		return result;
-	}
-
-	public static void main(String[] args) throws Exception
-	{
-		if (args.length > 4)
-		{
-			System.err.println("Usage: TCPMiddlewareServer [flight_host[:port] [car_host[:port] " +
-				"[room_host[:port] [listen_port]]]]");
-			System.exit(2);
-		}
-		int port = args.length == 4 ? Integer.parseInt(args[3]) : 3042;
-		Map<ResourceType, Endpoint> endpoints = endpoints(args);
-		TCPMiddlewareServer server = new TCPMiddlewareServer(endpoints, port);
-		int boundPort = server.start();
-		Runtime.getRuntime().addShutdownHook(new Thread(server::close));
-		System.out.println("TCP Middleware listening on port " + boundPort);
-		new java.util.concurrent.CountDownLatch(1).await();
 	}
 }

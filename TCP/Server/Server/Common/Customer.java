@@ -51,13 +51,15 @@ public class Customer extends RMItem
 
 	public String getBill()
 	{
-		StringBuilder bill = new StringBuilder("Bill for customer ").append(m_ID).append('\n');
+		StringBuilder bill = new StringBuilder("Bill for customer ")
+				.append(m_ID).append('\n');
 		long total = 0;
 		for (String key : m_reservations.keySet())
 		{
 			ReservedItem item = (ReservedItem) m_reservations.get(key);
-			bill.append(item.getCount()).append(' ').append(item.getReservableItemKey())
-				.append(" $").append(item.getPrice()).append('\n');
+			bill.append(item.getCount()).append(' ')
+					.append(item.getReservableItemKey()).append(" $")
+					.append(item.getPrice()).append('\n');
 			total += (long)item.getCount() * item.getPrice();
 		}
 		bill.append("Total cost: $").append(total).append('\n');

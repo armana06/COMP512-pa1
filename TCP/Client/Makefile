@@ -1,10 +1,10 @@
-.PHONY: all test clean
+all: compile-client
 
-all:
-	$(MAKE) -C .. all
+../Server/RMIInterface.jar: ../Server/Server/Interface/IResourceManager.java
+	$(MAKE) -C ../Server RMIInterface.jar
 
-test:
-	$(MAKE) -C .. test
+compile-client: ../Server/RMIInterface.jar
+	javac -cp ../Server/RMIInterface.jar:. ../Shared/*.java Client/*.java
 
 clean:
-	$(MAKE) -C .. clean
+	rm -f Client/*.class

@@ -1,112 +1,114 @@
 package Server.TCP;
 
 import Server.Common.ResourceManager;
+import Shared.Request;
+import Shared.Response;
 
 import java.rmi.RemoteException;
-final class ResourceManagerDispatcher
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
+public final class ResourceManagerDispatcher
 {
-	private ResourceManagerDispatcher()
+	private final ResourceManager resourceManager;
+	private final ReentrantReadWriteLock stateLock = new ReentrantReadWriteLock(true);
+
+	public ResourceManagerDispatcher(ResourceManager resourceManager)
 	{
+		this.resourceManager = resourceManager;
 	}
 
-	static Object invoke(ResourceManager manager, TcpProtocol.Request request) throws RemoteException
+	public Response dispatch(Request request)
 	{
-		Object[] args = request.arguments;
-		switch (request.method)
+		Lock lock = isReadOnly(request.command)
+				? stateLock.readLock()
+				: stateLock.writeLock();
+		lock.lock();
+		try
+		{
+			return Response.success(invoke(request));
+		}
+		catch (RemoteException | RuntimeException e)
+		{
+			return Response.failure(e.toString());
+		}
+		finally
+		{
+			lock.unlock();
+		}
+	}
+
+	private Object invoke(Request request) throws RemoteException
+	{
+		Object[] args = request.args;
+		switch (request.command)
 		{
 			case "addFlight":
-				requireCount(request, 3);
-				return Boolean.valueOf(manager.addFlight(integer(args[0]), integer(args[1]), integer(args[2])));
+				return resourceManager.addFlight((Integer)args[0], (Integer)args[1], (Integer)args[2]);
 			case "addCars":
-				requireCount(request, 3);
-				return Boolean.valueOf(manager.addCars(string(args[0]), integer(args[1]), integer(args[2])));
+				return resourceManager.addCars((String)args[0], (Integer)args[1], (Integer)args[2]);
 			case "addRooms":
-				requireCount(request, 3);
-				return Boolean.valueOf(manager.addRooms(string(args[0]), integer(args[1]), integer(args[2])));
+				return resourceManager.addRooms((String)args[0], (Integer)args[1], (Integer)args[2]);
 			case "newCustomer":
 				if (args.length == 0)
 				{
-					return Integer.valueOf(manager.newCustomer());
+					return resourceManager.newCustomer();
 				}
-				requireCount(request, 1);
-				return Boolean.valueOf(manager.newCustomer(integer(args[0])));
+				return resourceManager.newCustomer((Integer)args[0]);
 			case "deleteFlight":
-				requireCount(request, 1);
-				return Boolean.valueOf(manager.deleteFlight(integer(args[0])));
+				return resourceManager.deleteFlight((Integer)args[0]);
 			case "deleteCars":
-				requireCount(request, 1);
-				return Boolean.valueOf(manager.deleteCars(string(args[0])));
+				return resourceManager.deleteCars((String)args[0]);
 			case "deleteRooms":
-				requireCount(request, 1);
-				return Boolean.valueOf(manager.deleteRooms(string(args[0])));
+				return resourceManager.deleteRooms((String)args[0]);
 			case "deleteCustomer":
-				requireCount(request, 1);
-				return Boolean.valueOf(manager.deleteCustomer(integer(args[0])));
+				return resourceManager.deleteCustomer((Integer)args[0]);
 			case "queryFlight":
-				requireCount(request, 1);
-				return Integer.valueOf(manager.queryFlight(integer(args[0])));
+				return resourceManager.queryFlight((Integer)args[0]);
 			case "queryCars":
-				requireCount(request, 1);
-				return Integer.valueOf(manager.queryCars(string(args[0])));
+				return resourceManager.queryCars((String)args[0]);
 			case "queryRooms":
-				requireCount(request, 1);
-				return Integer.valueOf(manager.queryRooms(string(args[0])));
+				return resourceManager.queryRooms((String)args[0]);
 			case "queryCustomerInfo":
-				requireCount(request, 1);
-				return manager.queryCustomerInfo(integer(args[0]));
+				return resourceManager.queryCustomerInfo((Integer)args[0]);
 			case "queryFlightPrice":
-				requireCount(request, 1);
-				return Integer.valueOf(manager.queryFlightPrice(integer(args[0])));
+				return resourceManager.queryFlightPrice((Integer)args[0]);
 			case "queryCarsPrice":
-				requireCount(request, 1);
-				return Integer.valueOf(manager.queryCarsPrice(string(args[0])));
+				return resourceManager.queryCarsPrice((String)args[0]);
 			case "queryRoomsPrice":
-				requireCount(request, 1);
-				return Integer.valueOf(manager.queryRoomsPrice(string(args[0])));
+				return resourceManager.queryRoomsPrice((String)args[0]);
 			case "reserveFlight":
-				requireCount(request, 2);
-				return Boolean.valueOf(manager.reserveFlight(integer(args[0]), integer(args[1])));
+				return resourceManager.reserveFlight((Integer)args[0], (Integer)args[1]);
 			case "reserveCar":
-				requireCount(request, 2);
-				return Boolean.valueOf(manager.reserveCar(integer(args[0]), string(args[1])));
+				return resourceManager.reserveCar((Integer)args[0], (String)args[1]);
 			case "reserveRoom":
-				requireCount(request, 2);
-				return Boolean.valueOf(manager.reserveRoom(integer(args[0]), string(args[1])));
+				return resourceManager.reserveRoom((Integer)args[0], (String)args[1]);
 			case "cancelReservation":
-				requireCount(request, 3);
-				return Boolean.valueOf(manager.cancelReservation(
-					integer(args[0]), string(args[1]), string(args[2])));
+				return resourceManager.cancelReservation((Integer)args[0],
+						(String)args[1], (String)args[2]);
 			case "getName":
-				requireCount(request, 0);
-				return manager.getName();
+				return resourceManager.getName();
 			default:
-				throw new IllegalArgumentException("Unsupported ResourceManager method: " + request.method);
+				throw new IllegalArgumentException("Unknown command: " + request.command);
 		}
 	}
 
-	private static void requireCount(TcpProtocol.Request request, int expected)
+	private static boolean isReadOnly(String command)
 	{
-		if (request.arguments.length != expected)
+		switch (command)
 		{
-			throw new IllegalArgumentException("Invalid argument count for " + request.method);
+			case "queryFlight":
+			case "queryCars":
+			case "queryRooms":
+			case "queryCustomerInfo":
+			case "queryFlightPrice":
+			case "queryCarsPrice":
+			case "queryRoomsPrice":
+			case "getName":
+				return true;
+			default:
+				return false;
 		}
 	}
 
-	private static int integer(Object value)
-	{
-		if (!(value instanceof Integer))
-		{
-			throw new IllegalArgumentException("Expected integer argument");
-		}
-		return ((Integer)value).intValue();
-	}
-
-	private static String string(Object value)
-	{
-		if (!(value instanceof String))
-		{
-			throw new IllegalArgumentException("Expected string argument");
-		}
-		return (String)value;
-	}
 }

@@ -1,180 +1,70 @@
 package Server.TCP;
 
 import Server.Common.ResourceManager;
+import Shared.Request;
+import Shared.Response;
+import Shared.TcpChannel;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.EOFException;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicBoolean;
 
-public final class TCPResourceManagerServer implements AutoCloseable
+public final class TCPResourceManagerServer
 {
-	private final ResourceManager manager;
-	private final int requestedPort;
-	private final ExecutorService connections = Executors.newCachedThreadPool();
-	private final ExecutorService requests = Executors.newFixedThreadPool(
-		Math.max(4, Math.min(16, Runtime.getRuntime().availableProcessors())));
-	private final Set<Socket> sockets = ConcurrentHashMap.newKeySet();
-	private final AtomicBoolean running = new AtomicBoolean();
-	private ServerSocket listener;
+	private static final int DEFAULT_PORT = 3042;
 
-	public TCPResourceManagerServer(ResourceManager manager, int port)
+	public static void main(String[] args)
 	{
-		this.manager = manager;
-		this.requestedPort = port;
-	}
-
-	public synchronized int start() throws IOException
-	{
-		if (running.get())
+		if (args.length > 2)
 		{
-			return listener.getLocalPort();
+			System.err.println("Usage: java Server.TCP.TCPResourceManagerServer [name [port]]");
+			System.exit(1);
 		}
-		listener = new ServerSocket(requestedPort);
-		running.set(true);
-		Thread acceptor = new Thread(this::acceptConnections, "tcp-rm-accept");
-		acceptor.setDaemon(true);
-		acceptor.start();
-		return listener.getLocalPort();
-	}
 
-	private void acceptConnections()
-	{
-		while (running.get())
-		{
-			try
-			{
-				Socket socket = listener.accept();
-				sockets.add(socket);
-				connections.execute(() -> serveConnection(socket));
-			}
-			catch (IOException e)
-			{
-				if (running.get())
-				{
-					System.err.println("ResourceManager accept failed: " + e.getMessage());
-				}
-			}
-		}
-	}
+		String name = args.length > 0 ? args[0] : "Resources";
+		int port = args.length > 1 ? Integer.parseInt(args[1]) : DEFAULT_PORT;
+		ResourceManagerDispatcher dispatcher =
+				new ResourceManagerDispatcher(new ResourceManager(name));
 
-	private void serveConnection(Socket socket)
-	{
-		try (Socket client = socket;
-			 DataInputStream input = new DataInputStream(client.getInputStream());
-			 DataOutputStream output = new DataOutputStream(client.getOutputStream()))
+		try (ServerSocket server = new ServerSocket(port))
 		{
-			while (running.get() && !client.isClosed())
+			System.out.println("'" + name + "' TCP resource manager listening on port " + port);
+			while (true)
 			{
-				TcpProtocol.Request request;
-				try
-				{
-					request = TcpProtocol.readRequest(input);
-				}
-				catch (EOFException e)
-				{
-					break;
-				}
-				requests.execute(() -> executeRequest(request, output));
+				Socket socket = server.accept();
+				new Thread(new RequestHandler(socket, dispatcher), "tcp-rm-client").start();
 			}
 		}
 		catch (IOException e)
 		{
-			if (running.get())
-			{
-				System.err.println("ResourceManager connection failed: " + e.getMessage());
-			}
-		}
-		finally
-		{
-			sockets.remove(socket);
+			System.err.println("TCP resource manager failed: " + e);
+			System.exit(1);
 		}
 	}
 
-	private void executeRequest(TcpProtocol.Request request, DataOutputStream output)
+	private static final class RequestHandler implements Runnable
 	{
-		TcpProtocol.Response response;
-		try
+		private final Socket socket;
+		private final ResourceManagerDispatcher dispatcher;
+
+		private RequestHandler(Socket socket, ResourceManagerDispatcher dispatcher)
 		{
-			response = TcpProtocol.Response.success(
-				request.id, ResourceManagerDispatcher.invoke(manager, request));
-		}
-		catch (Exception e)
-		{
-			response = TcpProtocol.Response.failure(request.id, errorMessage(e));
+			this.socket = socket;
+			this.dispatcher = dispatcher;
 		}
 
-		synchronized (output)
+		public void run()
 		{
-			try
+			try (TcpChannel channel = new TcpChannel(socket))
 			{
-				TcpProtocol.writeResponse(output, response);
+				Request request = channel.receiveRequest();
+				Response response = dispatcher.dispatch(request);
+				channel.sendResponse(response);
 			}
-			catch (IOException e)
+			catch (IOException | ClassNotFoundException e)
 			{
-				if (running.get())
-				{
-					System.err.println("ResourceManager response failed: " + e.getMessage());
-				}
+				System.err.println("TCP resource manager connection failed: " + e);
 			}
 		}
-	}
-
-	private static String errorMessage(Exception e)
-	{
-		String message = e.getMessage();
-		return e.getClass().getSimpleName() + (message == null ? "" : ": " + message);
-	}
-
-	@Override
-	public synchronized void close()
-	{
-		running.set(false);
-		if (listener != null)
-		{
-			try
-			{
-				listener.close();
-			}
-			catch (IOException ignored)
-			{
-			}
-		}
-		for (Socket socket : sockets)
-		{
-			try
-			{
-				socket.close();
-			}
-			catch (IOException ignored)
-			{
-			}
-		}
-		connections.shutdownNow();
-		requests.shutdownNow();
-	}
-
-	public static void main(String[] args) throws Exception
-	{
-		if (args.length < 1 || args.length > 2)
-		{
-			System.err.println("Usage: TCPResourceManagerServer <Flights|Cars|Rooms> [port]");
-			System.exit(2);
-		}
-		ResourceType type = ResourceType.fromName(args[0]);
-		int port = args.length == 2 ? Integer.parseInt(args[1]) : type.defaultPort;
-		TCPResourceManagerServer server =
-			new TCPResourceManagerServer(new ResourceManager(type.name), port);
-		int boundPort = server.start();
-		Runtime.getRuntime().addShutdownHook(new Thread(server::close));
-		System.out.println(type.name + " TCP ResourceManager listening on port " + boundPort);
-		new java.util.concurrent.CountDownLatch(1).await();
 	}
 }
