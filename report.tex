@@ -13,9 +13,54 @@
 \begin{document}
 \maketitle
 
-\section{Overview}
+\section{Overview and Shared Design}
 
-\section{RMI Distribution}
+The goal of this assignment was to distribute a travel reservation system
+implemented in Java. We were initially provided with a code template where a
+single client was talking over RMI to a single \code{ResourceManager}
+(\code{RM}) that stores all flights, cars, rooms, and customers in a single
+hashmap. The system was first distributed with RMI, by inserting a middleware
+between the (unmodified) clients and three \code{RM}s, one for each resource
+type (Section~\ref{sec:rmi}). The system was then distributed using TCP sockets
+(Section~\ref{sec:tcp}).
+
+Both versions share a similar architecture. The client is unchanged and talks
+only to a middleware server. The middleware dispatches every request to one of
+the three RMs, one each for flights, cars, and rooms. Each RM runs the
+\code{ResourceManager} class provided in the starter code (which implements the
+whole \code{IResourceManager} interface), and the middleware only calls flight
+methods on the flights RM, car methods on the cars RM, and room methods on the
+rooms RM. The RMI version uses the \code{ResourceManager} class unchanged, and
+the TCP version adds a \code{cancelReservation} operation (used to undo a
+bundle) and a total line to the customer's bill.
+
+\subsection{Customers}
+
+In both versions, we chose to replicate customers on all three RMs so that each
+RM holds a record for every customer, but each copy only contains the
+reservations of that RM's resource type. This simplifies the code since every
+reservation is a single call to one RM and we can reuse the template's
+\code{reserveItem}: the function finds the customer, decrements the resource
+count, and records the reservation in the customer's data, all in the same RM. A
+reservation thus can't half-succeed, and this approach requires no change to the
+RM code. The drawback is that creating, deleting, and querying a customer 
+involves all three RMs. This means that a creation or deletion that fails after
+only one or two of the RMs were updated leaves the copies inconsistent and must
+be handled somehow. The total bill also needs to be assembled from the 3 RMs.
+
+The specification also offers two alternatives to this design: store the customers
+in an additional server or at the middleware, i.e. store all the customers at a
+single place. This simplifies creating customers, queries about their reservations,
+and computing the total bill (deleting a customer still involves every RM that
+holds their reservations), but it separates the customers from the items they
+reserve (every reservation must update two servers). While both designs may result
+in operations that can fail halfway, and thus require an inconsistency to be
+repaired, they differ when a server crashes: a crashed RM in our design only loses
+its own items together with their reservations, whereas if the middleware or the
+customer server fails, all customer data is lost.
+
+
+\section{RMI Distribution}\label{sec:rmi}
 
 \subsection{Middleware and startup}
 
@@ -28,7 +73,7 @@
 \subsection{Submitted version}
 
 
-\section{TCP Sockets}
+\section{TCP Sockets}\label{sec:tcp}
 
 
 
