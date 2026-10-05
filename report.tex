@@ -154,9 +154,21 @@ version.
 
 
 \section{TCP Sockets}\label{sec:tcp}
+\subsection{Message Passing}
+Our implementation employs a persistent socket for communication between the middleware and each client, and uses a fresh socket for communication between the middleware and the resource managers. This implementation has its benefits in its simplicity of ensuring correctness. Since the clients send blocking requests, we can ensure that any message the middleware is sending any given client is for the last request sent. This cannot be ensured between the middleware and resource managers. We can illustrate this problem most easily by way of the example below.
 
+Suppose, instead, that we had persistent sockets to each resource manager and two clients send requests for a flight operation, say querying two different flights at around the same time. Since the resource managers and middleware are concurrent, we cannot assume that one of said requests will be answered before the other. Further, in message reception, we will have no way to distinguish the result of one request from the other, given they are the same type. 
 
+Solving this would require implementing some sort of message tagging system, for example sequence numbers, to disambiguate messages from another. Further, we would have had to implement a mechanism to route messages to the right requests. One possible avenue to solve this is to have the resource managers repeatedly send results until they are received by the correct request, though this could seriously hinder the latency and jitter of the infrastructure.
 
+The creation (and destruction) of a new socket for each request, then, avoids these issues. Issues of disambiguation are solved because each socket is used only for the middleware to send a request to the RM, and for the RM to receive it, keeping the code simple and correctness easily established. This method, though, will see increased overhead for each request because of the repeated creation and destruction of the sockets.
+
+Messages are passed using a Request object consisting of a String for a command and an Object array for the arguments. While this approach makes the parsing of each object easy, we lose the protection of the type-checker here. The use of an Object to send messages also allows us to rely on Java's serialization during sending and reception. A similar response class is used for the reception of results from the resource managers. 
+\subsection{Concurrency}
+Concurrency is handled simply. Upon connection, the middleware assigns each client its own thread which will handle of its receives and sends. Since the clients are blocking, this allows the middleware to be maximally concurrent, dealing with a request from each client concurrently. Resource managers create a new thread upon connection of a new socket from the middleware. These are managed by a state lock at each resource manager when the operation executes. Queries take the read-lock, so multiple of them can run together, where mutators take a write lock and are therefore treated as one operation. This allows for a good amount of speed gain due to concurrency, allowing for many reads to occur at once, but allows for the easy assurance of correctness. Further, this approach does not guarantee a FIFO order across different clients; operations occur within a single RM based on how quickly they can take the lock.
+
+\subsection{Customers and Bundles}
+Customer data is replicated at all three resource managers, with the middleware coordinating their creation deletion, and bill creation. Bundles are all-or-nothing; if one of its reservations fails it rolls back all of the reservations in the bundle. If one of these cancellations fails, the middleware reports an error.
 \newpage
 
 \section{Testing}
