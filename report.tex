@@ -13,7 +13,7 @@
 \begin{document}
 \maketitle
 
-\section{Overview and Shared Design}
+\section{Overview and Shared Architecture}
 
 The goal of this assignment was to distribute a travel reservation system
 implemented in Java. We were initially provided with a code template where a
@@ -58,6 +58,17 @@ in operations that can fail halfway, and thus require an inconsistency to be
 repaired, they differ when a server crashes: a crashed RM in our design only loses
 its own items together with their reservations, whereas if the middleware or the
 customer server fails, all customer data is lost.
+
+\subsection{Bundles}
+
+A bundle reserves one or more flights, and possibly a car and/or a room at a
+location, for a single customer. Reserving a bundle is handled by the middleware
+in both versions since it can involve up to three RMs (one per resource type).
+A bundle must be all-or-nothing, i.e. either every requested item is reserved,
+or none is. The difficulty in achieving that is that the template offers no way
+to cancel a single reservation (deleting a customer would also cancel their
+previous reservation). The two versions handle this differently (see
+Sections~\ref{sec:rmi} and~\ref{sec:tcp}).
 
 
 \section{RMI Distribution}\label{sec:rmi}
