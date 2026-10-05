@@ -21,9 +21,6 @@ public class Middleware implements IResourceManager{
 	static String name = "Middleware";
 	int cusID = 0;
 	public Middleware() {
-		/* TODO
-		 * populates managers with managers
-		 */
 		//initializes counters to -1, since update occurs before each use.
 		//This should be safe, no access will occur at this point.
 		for(ResItemEnum x : ResItemEnum.values()) {
@@ -104,7 +101,7 @@ public class Middleware implements IResourceManager{
 	public boolean deleteCars(String location) throws RemoteException {
 		boolean status = true;
 		for (IResourceManager x : readManager(ResItemEnum.CAR)) {
-			status =  x.deleteCars(location) && status;
+			status =  x.deleteCars(location) || status;
 		}
 		return status;
 	}
@@ -112,7 +109,7 @@ public class Middleware implements IResourceManager{
 	public boolean deleteRooms(String location) throws RemoteException {
 		boolean status = true;
 		for (IResourceManager x : readManager(ResItemEnum.ROOM)) {
-			status =  x.deleteRooms(location) && status;
+			status =  x.deleteRooms(location) || status;
 		}
 		return status;
 	}
@@ -259,15 +256,23 @@ public class Middleware implements IResourceManager{
 	* @return Success
 	*/
 	public boolean bundle(int customerID, Vector<String> flightNumbers, String location, boolean car, boolean room) throws RemoteException{
-		Trace.warn(Boolean.toString(car));
-		Trace.warn(Boolean.toString(car));
 		boolean status = true;
 		for(String s : flightNumbers) {
 			status = reserveFlight(customerID, Integer.parseInt(s)) && status;
+			if(!status) {
+				deleteCustomer(customerID);
+				newCustomer(customerID);
+				return status;
+			}
 		}
 		if(car) {
 			Trace.warn("entered car");
 			status = reserveCar(customerID, location) && status;
+			if(!status) {
+				deleteCustomer(customerID);
+				newCustomer(customerID);
+				return status;
+			}
 		}
 		if(room) {
 			Trace.warn("entered room");
