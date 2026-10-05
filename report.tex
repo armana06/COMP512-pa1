@@ -1,5 +1,5 @@
-\documentclass[11pt]{article}
-\usepackage[margin=1in]{geometry}
+\documentclass[10pt]{article}
+\usepackage[margin=0.85in]{geometry}
 \usepackage{parskip}
 \usepackage{listings}
 
@@ -77,17 +77,80 @@ Sections~\ref{sec:rmi} and~\ref{sec:tcp}).
 
 \subsection{Middleware and startup}
 
+The middleware is implemented using only one class
+(\code{Server.RMI.RMIMiddleware}) that implements \code{IResourceManager}.
+Since the client interacts only with that interface, it connects to the
+middleware the same way it would to an RM using \code{./run_client.sh <host>
+  Middleware}. The middleware receives the hostnames of the flights, cars, and
+rooms RMs as three command line arguments. On startup, it then looks up each of
+the three RMs in the registry, retrying every 500ms until they all become
+reachable. It only binds itself as \code{group_42_Middleware} after all the RMs
+are connected so that a client can't reach the middleware if it's not fully
+intialized. This also means that the start order of the processes don't matter.
+The interface methods are just forward methods to the corresponding RM.
+
+\subsection{Errors and exceptions}
+
+When an RM is down or does not answer within 5 seconds, the middleware's call to
+that RM throws a \code{RemoteException}. We chose not to catch this exception in
+the middleware: RMI delivers it to the client wrapped in a \code{ServerException},
+and the client already reports it by printing it as a command error with its
+cause. If the middleware itself is down, the client automatically reconnects to
+it and executes the command again.
+
 \subsection{Customers}
+
+As described above, customers are replicated in each RM and so the middleware
+sends every customer creation, deletion, and bill query to all three RMs. To
+create a customer, \code{AddCustomer} chooses IDs sequentially (via a counter kept
+in the middleware), skipping any ID that is already taken (e.g. by
+\code{AddCustomerID}), and creates the customer in each RM. If this fails for one
+RMs, the customer is deleted from the RMs where the creation succeeded (safe since
+the customer has no reservations yet) and the exception is propagated to the
+client. Deleting a customer can't be undone (the interface has no way to restore
+the reservations of the deleted customer), so the middleware calls
+\code{deleteCustomer} on all RMs and throws an exception to the client if one
+fails. The client then must run the command again to delete the remaining
+customer (or else it'll be leaked along with its items).
 
 \subsection{Bundle}
 
 As discussed previously, the bundles must be all-or-nothing, but the provided
 interface has no way of canceling a single reservation without wiping a
-customer's previous reservations. The RMI version handles this by checking
+customer's previous reservations. The RMI version handles this by checking that
+all the resources are available before reserving anything. This is done in three
+phases (using the middleware's global lock):
+\begin{enumerate}
+\item Check that each argument is valid.
+\item Pre-check that the customer exists on every RM involved in the bundle and
+  that the resources are available. A failure at this stage returns \code{false}
+  without doing anything.
+\item Reserve the flights, and possibly the car and the room.
+\end{enumerate}
+The lock prevents other clients from modifying anything between the second and
+third step, and so this operation never fails unless a RM fails during the third
+part. If this happens, the middleware throws an exception to the client that lists
+reservations that were made and the user must complete the bundle manually.
 
-\subsection{Concurrency and failures}
+\subsection{Concurrency}
 
-\subsection{Submitted version}
+The middleware handles concurrent requests by using one global lock held by
+every operation that may modify any state in a RM (the only operations that are
+not locked are single item queries). This means that most operations are fully
+serialized but it makes the implementation simpler. Because a RM could hang (not
+crash) while holding the lock, we added a timeout (5 seconds) so that these
+calls fail instead of blocking every client forever.
+
+\subsection{Final version}
+
+Our final version is the version developed with AI, which is the one described
+above. The version written by hand had several issues involving concurrency, the
+support for multiple RMs per resource type (which is a more general solution but
+introduced several bugs), and other behaviour that didn't match the 
+specification. Modifying this version would've amounted to a rewrite, only to
+end up with a version that essentially mirrors the one developed with AI. Since
+the AI version was relatively well tested, we chose to submit it as our final
+version.
 
 
 \section{TCP Sockets}\label{sec:tcp}
@@ -111,8 +174,8 @@ Arman using Copilot (Copilot CLI agent in VS Code in auto mode, using GPT-6
 Luna). In both cases, we made the architecture decisions. The AI would present
 us with options and their trade-offs, and would implement only what had been
 agreed upon, step by step. Each step was tested independently to make it easier
-for us to understand the resulting code. The report was written without the use
-of AI.
+for us to understand the resulting code. The report and the slides were written
+without the use of AI.
 
 The Copilot conversation is attached as a JSON file, while the Claude
 conversation is accessible via this
