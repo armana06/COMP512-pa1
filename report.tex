@@ -157,14 +157,41 @@ version.
 
 
 
-
 \newpage
 
 \section{Testing}
 
-\subsection{RMI}
+Listed below are some of the (more interesting) tests used to determine the
+correctness of our implementations. Some tests are not listed explicitly so that
+the list fits in one page, but a short description is provided instead. These
+tests were conducted locally and on the machines in Trottier.
 
-\subsection{TCP}
+\textbf{RMI}
+\begin{itemize}
+\item \emph{Dispatch.} Resources are only stored on the RM of their type
+  (checked by querying RMs directly).
+\item \emph{Delete item.} Deleting an item only works once, deleting it again
+  returns \code{false}.
+\item \emph{Delete customer.} The count of all seat, car, and room are restored
+  on all RM when deleting a customer holding resources.
+\item \emph{Negative counts.} Command like \code{AddFlight,2,-5,10} returns
+  \code{false} and the RM is never reached.
+\item \emph{Price update.} \code{AddFlight,1,0,250} on an existing flight only
+  changes its price (since the number of seats to add is 0). A customer who
+  reserved a seat before a price update will only be charged the previous price,
+  but if he reserves a new seat afterwards, he will be charged the new price for
+  all his seats. Total bill is correctly calculated.
+\item \emph{Bundle.} If a room is sold out, the bundle fails and the other
+  resource counts remain unchanged. Bundles with non-existing customer or
+  resource fail.
+\item \emph{Customer IDs.} \code{AddCustomer} returns 1, \code{AddCustomer}
+  again returns 2. After \code{AddCustomerID,3} and \code{AddCustomerID,5},
+  running it twice returns 4, then 6. A duplicate ID returns \code{false}.
+\item \emph{RM failure.} Commands involving a killed RM fail with an exception.
+\end{itemize}
+
+\textbf{TCP}
+
 
 \section{Use of AI and Token Estimate}
 
@@ -203,5 +230,22 @@ inevitable transition into professional meat proxies for LLMs.
 
 \section{Collaboration}
 
+\textbf{Meetings}
+\begin{itemize}
+\item (September 29, 30 minutes) Go through the template code, discuss what
+  needed to be done, and who does the AI implementation.
+\item (October 2, 1 hour) Compare and test our implementations, decide on
+  which implementation to use, and distribute the rest of the work among us.
+\end{itemize}
+Outside of meetings, we have been continuously communicating via Discord every
+day throughout the project.
+
+\textbf{Contributions}
+\begin{itemize}
+\item Arman: RMI version by hand, TCP version using AI, writing the report (TCP
+  section), preparing the demo
+\item Frédéric: RMI version using AI, testing both RMI and TCP versions, writing
+  the report (all sections, except for some parts of TCP), preparing the demo
+\end{itemize}
 
 \end{document}
