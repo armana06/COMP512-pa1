@@ -3,6 +3,8 @@
 \usepackage{parskip}
 \usepackage{listings}
 
+\usepackage{hyperref}
+
 \newcommand{\code}[1]{\lstinline{#1}}
 
 \title{COMP 512 -- Programming Assignment 1\\
@@ -79,6 +81,10 @@ Sections~\ref{sec:rmi} and~\ref{sec:tcp}).
 
 \subsection{Bundle}
 
+As discussed previously, the bundles must be all-or-nothing, but the provided
+interface has no way of canceling a single reservation without wiping a
+customer's previous reservations. The RMI version handles this by checking
+
 \subsection{Concurrency and failures}
 
 \subsection{Submitted version}
@@ -99,9 +105,38 @@ Sections~\ref{sec:rmi} and~\ref{sec:tcp}).
 
 \section{Use of AI and Token Estimate}
 
-\subsection{Use of AI}
+The RMI version with AI was developed by Frédéric using Claude (Sonnet 5.5),
+while Arman developped the version without AI. The TCP version was developped by
+Arman using Copilot (Copilot CLI agent in VS Code in auto mode, using GPT-6
+Luna). In both cases, we made the architecture decisions. The AI would present
+us with options and their trade-offs, and would implement only what had been
+agreed upon, step by step. Each step was tested independently to make it easier
+for us to understand the resulting code. The report was written without the use
+of AI.
+
+The Copilot conversation is attached as a JSON file, while the Claude
+conversation is accessible via this
+\href{https://claude.ai/share/ed28011a-42ed-44b7-b5f0-b539f9a87bba}{link}
+(we couldn't export the conversation as a PDF).
 
 \subsection{Tokens}
+
+For the RMI session, Claude estimates around 8-10 million input tokens and 140k
+output tokens (for the conversation itself). For the TCP version, Copilot
+reports about 9.8 million input tokens and 97k output tokens. In both cases,
+most input tokens are the conversation being re-read on every request. In total,
+we used roughly 18-20 million input tokens and 240k output tokens. 
+
+\subsection{Some thoughts}
+
+Both of us agree that the use of AI, while allowing us to finish the assignment
+faster, greatly impaired our ability to reason about the code, even though we
+``made the decisions''. It also left us with a relatively shallow understanding
+of the concepts involved.
+
+Overall, we would rather not use AI for future assignments, and postpone our
+inevitable transition into professional meat proxies for LLMs.
+
 
 \section{Collaboration}
 
