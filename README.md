@@ -65,3 +65,6 @@ clients while backend work runs, and routes asynchronous backend replies to
 the waiting client. ResourceManagers use worker pools for concurrent requests.
 Customer operations are replicated to all three managers, and bundle
 reservations compensate completed steps if a later reservation fails.
+
+For implementation details, API behavior, protocol layout, testing coverage,
+limitations, and extension guidance, see [TCP/README.md](TCP/README.md).
