@@ -11,18 +11,57 @@
 \maketitle
 
 \begin{frame}{Shared architecture}
-  TODO
+  \scriptsize
+  \textbf{Structure}
+  \begin{itemize}
+  \item Client is unchanged and only talks to the middleware
+  \item Middleware routes each request to one of the three RMs (Flights, Cars,
+    Rooms)
+  \item Three RMs run the (unchanged) ResourceManager from the template
+  \item Middleware only calls each RM's own resource methods
+  \end{itemize}
+
+  \textbf{Customers}
+  \begin{itemize}
+  \item Replicated on all RMs, each copy only holds resources associated with
+    that RM
+  \item \textbf{Benefits}: Reservation is a single call, failure causes only a
+    partial loss of customers, minimal changes to code (RM and reserveItem
+    unchanged)
+  \item \textbf{Drawback}: creating, deleting and querying a customer involve
+    all RMs
+  \end{itemize}
+
+  \textbf{Bundles}
+  \begin{itemize}
+  \item All-or-nothing, coordinated by middleware
+  \item No way to cancel a single reservation, RMI and TCP handle this
+    differently
+  \end{itemize}
 \end{frame}
 
 \begin{frame}{RMI}
-  TODO
+  \footnotesize
+  \begin{itemize}
+  \item \textbf{Startup}: \texttt{RMIMiddleware} implements
+    \texttt{IResourceManager}; Binds only once all three RMs are reachable
+  \item \textbf{Exceptions}: RM's \texttt{RemoteException} not caught;
+    propagated to the client as a \texttt{ServerException} and is printed as a
+    command error
+  \item \textbf{Customers}: IDs with sequential counter (in middleware); Failed
+    creation undone on each RM where it succeeded; Failed deletion only reports
+    to the client which failed; Total bill computed by middleware
+  \item \textbf{Bundles}: Validate, pre-check, then reserve; Global lock; Rm
+    crashing during phase 3 throws an exception that tells the client which
+    reservations were made
+  \item \textbf{Concurrency}: Global lock for all stateful operations; Timeouts
+    to make sure lock is released even if a RM is hanging; Serializes the
+    middleware but simpler
+  \item \textbf{Negative counts}: Returns false
+  \end{itemize}
 \end{frame}
 
 \begin{frame}{TCP}
-  TODO
-\end{frame}
-
-\begin{frame}{AI}
   TODO
 \end{frame}
 
