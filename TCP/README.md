@@ -142,6 +142,26 @@ make -C Client compile-client
 The launch scripts also build the necessary classes before starting their
 process. A JDK is required because the scripts call `javac` and `java`.
 
+## Run the tests
+
+With a JDK installed, run the repeatable TCP integration suite from this
+directory:
+
+```sh
+make -C Server test
+```
+
+The test runner compiles the client and server into a temporary directory,
+starts three resource managers and a middleware on dynamically selected local
+ports, exercises the system through serialized TCP requests, and shuts the
+processes down. It checks persistent client connections, command errors,
+resource routing, customer replication, bills, successful and rolled-back
+bundles (including duplicate-flight rollback), concurrent reservations,
+concurrent inventory additions, concurrent generated customer IDs, and
+reserve-vs-delete races. It also checks inventory restoration after customer
+deletion. The test source is `tests/TCPIntegrationTest.java`; the shell runner
+is `tests/run_tcp_tests.sh`.
+
 ## Run on one machine
 
 Use four different ports when running all processes on one machine, because
