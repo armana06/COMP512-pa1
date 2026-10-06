@@ -40,7 +40,7 @@ public final class TCPMiddlewareServer
 
 	private final EnumMap<ResourceType, Endpoint> endpoints;
 	private final Object customerLock = new Object();
-	private int nextCustomerId = (int)(System.currentTimeMillis() & 0x7fffffff);
+	private int nextCustomerId = 1;
 
 	private TCPMiddlewareServer(EnumMap<ResourceType, Endpoint> endpoints)
 	{

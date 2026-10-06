@@ -62,7 +62,18 @@
 \end{frame}
 
 \begin{frame}{TCP}
-  TODO
+  \footnotesize
+  \begin{itemize}
+    \item Clients get their own persistent socket to the middleware (implemented in TCPChannel)
+    \item \texttt{Client} reads a command and calls \texttt{TCPResourceManagerClient} which invokes the command, sending it to the middleware.
+    \item The middleware has a dedicated thread for each client. When clients connect the \texttt{TCPMiddlewareServer} creates this thread and gives it a \texttt{ResourceManagerDispatcher}. 
+    \item This dispatcher is the interface between the middleware and \texttt{TCPResourceManagerServer}. It manages command dispatch and state locking (read lock, write lock)
+      \begin{itemize}
+        \item Read operations can occur concurrently, mutations take the write lock, and occur one at a time.
+      \end{itemize}
+    \item The \texttt{TCPResourceManagerServer} does the computation and sends back a response to the middleware, which sends it back to the client.
+    \item We use classes \texttt{Response}, \texttt{Request} to send and receive messages, taking advantage of java's object serialization. This is fully general and easily extensible.
+  \end{itemize}
 \end{frame}
 
 \end{document}
