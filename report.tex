@@ -140,8 +140,8 @@ The middleware handles concurrent requests by using one global lock held by
 every operation that may modify any state in a RM (the only operations that are
 not locked are single item queries). This means that most operations are fully
 serialized but it makes the implementation simpler. Because a RM could hang (not
-crash) while holding the lock, we added a timeout (5 seconds) so that these
-calls fail instead of blocking every client forever.
+crash) while the middleware holds the lock, we added a timeout (5 seconds) so
+that these calls fail instead of blocking every client forever.
 
 \subsection{Final version}
 
